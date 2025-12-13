@@ -164,7 +164,7 @@ def send_arp_response(src_mac, src_ip, dst_mac, dst_ip):
     
     print("[+] Sending spoofed ARP frame!")
     s.send(ARP_FRAME)
-    time.sleep(1)
+    time.sleep(0.2)
 
 
 
