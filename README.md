@@ -1,5 +1,4 @@
 # ARPspoof
-A Python script to perform ARP spoofing
 
 ```
 usage: ARPspoof.py -sourceIP [IPADDRESS] -sourceMAC [MACADDRESS] -dstIP [IPADDRESS] -dstMAC [MACADDRESS]
