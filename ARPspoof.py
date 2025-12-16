@@ -39,7 +39,7 @@ def printhelp():
     print("  -sourceIP			spoofed IP of the target (web app, router, ...)")
     print("  -sourceMAC			attacker MAC where to redirect trafic")
     print("  -dstIP			IP address of destination")
-    print("  -dstMAC			the MAC of targeted device that you want to Mitm (or ff:ff:ff:ff:ff:ff")
+    print("  -dstMAC			the MAC of targeted device that you want to Mitm (or ff:ff:ff:ff:ff:ff)")
     print("")
     print("[EXAMPLE] > python3 ARPspoof.py -sourceIP 192.168.1.9 -sourceMAC 00:11:22:33:44:55 -dstIP 192.168.1.1 -dstMAC ff:ff:ff:ff:ff:ff")
 
@@ -170,4 +170,5 @@ def send_arp_response(src_mac, src_ip, dst_mac, dst_ip):
 
 if __name__ == '__main__':
     main()
+
 
