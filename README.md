@@ -8,5 +8,5 @@ usage: ARPspoof.py -sourceIP [IPADDRESS] -sourceMAC [MACADDRESS] -dstIP [IPADDRE
   -dstMAC			the MAC of targeted device that you want to Mitm (or ff:ff:ff:ff:ff:ff)
 ```
 ```
-python3 ARPspoof.py -sourceIP 192.168.1.9 -sourceMAC 00:11:22:33:44:55 -dstIP 192.168.1.1 -dstMAC ff:ff:ff:ff:ff:ff
+python3 ARPspoof.py -sourceIP 192.168.1.9 -sourceMAC 00:11:22:33:44:55 -dstIP 192.168.1.1 -dstMAC ff:ff:ff:ff:ff:ff -i eth0
 ```
