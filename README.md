@@ -12,3 +12,12 @@ options:
 ```
 python3 ARPspoof.py -i eth0 -t 10.0.2.9 --both
 ```
+
+## Allow forwarding
+
+```
+sudo sysctl -w net.ipv4.ip_forward=1
+```
+```
+sudo iptables -A FORWARD -i eth0 -j ACCEPT
+```
